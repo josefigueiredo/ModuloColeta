@@ -1,7 +1,11 @@
+/* Ultima alteracao em 27/6/2016 */
+/* Trabalhado com http POST header. */
+
 #include <TimerOne.h>
 #include <LiquidCrystal.h>
 #include <Ethernet.h>
 #include <SPI.h>
+#include <avr/pgmspace.h>  //esta lib eh para economizar espaco com chars longas
 
 //define o numero de amostras de cada captura
 #define AMOSTRAS 64
@@ -46,15 +50,18 @@ const unsigned char PS_32 = (1 << ADPS2) | (1 << ADPS0);
 const unsigned char PS_64 = (1 << ADPS2) | (1 << ADPS1);
 const unsigned char PS_128 = (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
 
-//inicializaao socket de rede
-byte mac[] = { 
-  0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
-  //meu IP
-IPAddress ip(172,20,6,254);
-// ip do servidor
-IPAddress server(172,20,6,41);
+//inicializaao REDE
+byte mac[] = {0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
+IPAddress ip(172,20,6,254); //meu IP 
+IPAddress server(172,20,6,40); // ip do servidor
+char serverName[] = "172.20.6.40";
+byte serverPort = 80;
+char pageName[] = "/captura.php";
+EthernetClient client; //inicia objeto que vai conectar na rede
+// set this to the number of milliseconds delay
+// this is 30 seconds
+#define delayMillis 30000UL
 
-EthernetClient client;
 
 void setup(){
   Serial.begin(9600);
@@ -63,8 +70,6 @@ void setup(){
   pinMode(sensorV, INPUT);     
 
   initDisplay();
-  ajustaBrilho();
-
 
   // set up the ADC
   analogReference(EXTERNAL); //usando uma referncia externa - de 3.3V
@@ -120,11 +125,11 @@ void setup(){
   //inicializa contador do temporizador para leitura em modo ISR
   Timer1.initialize(100000); // set a timer of length 100000 microseconds (or 0.1 sec - or 10Hz => the led will blink 5 times, 5 cycles of on-and-off, per second)
   Timer1.attachInterrupt( timerIsr ); // attach the service routine here
-  //controle tipo semaforos (spinlock)
-  //spinLock  uma chave para contrle de acesso ao vetor de leituras
 
   //ativaçao da rede
+  Serial.print(F("Starting ethernet..."));
   Ethernet.begin(mac, ip);
+
   delay(100);
 }
 
@@ -140,7 +145,6 @@ void loop(){
   if(Serial.available()){
     cmd = Serial.read();
 
-    
     switch(cmd){
     case '+':
       ganhoV+=1000;
@@ -167,20 +171,23 @@ void loop(){
       break;
     case 'm':
       //chama função memoriaLivre()
-      Serial.print("memoria livre: ");
+      Serial.print(F("memoria livre: "));
       Serial.println(memoriaLivre(),DEC);
       break;
     case 'o':
       overflowDBG = !overflowDBG;
       break;
+    case 'r':
+      testaSobreTensao();
+       break;
     default:
-      Serial.println("Ativar/desativar debug a(mA), b(A), c(V), m (mem livre), s(Serial),t(alteracaoRMS),+/- (ajuste ganho), o(overflow)");
+      Serial.println(F("Ativar/desativar debug a(mA), b(A), c(V), m (mem livre), s(Serial),t(alteracaoRMS),+/- (ajuste ganho), o(overflow), r(testa rede)"));
       break;  
     }
   }
 
   fazLeitura();
-  
+
   testaSobreTensao();
 
   delay(1000);
@@ -191,17 +198,12 @@ void testaSobreTensao(){
   //percorrer o vetor buscando valores acima de PIC_SUP_T e abaixo PIC_INF_T
   for(uint16_t i=0; i<AMOSTRAS; i++){
     if (vetorV[i] >= TENSAO_LIMIT_S || vetorV[i] <= TENSAO_LIMIT_I){
-      //o a eh de artefato (nome cientificio da sobretensao)
-      sendtoSocket(3, vetorV, 2, vetorA,'a');
-      Serial.print("Detectado sobre tensao");
-       break;
+      //sendtoSocket(3, vetorV, 2, vetorA,'a');
+      enviarPOST(3, vetorV, 2, vetorA,'a');
+      Serial.println(F("Detectado sobre tensao"));
+      break;
     }
   }
-}
-
-//executado por fora do loop
-void timerIsr(){
-  piscaLed();
 }
 
 
@@ -285,7 +287,7 @@ void fazLeitura(){
   CorrRMS = sqrt(accAflt/AMOSTRAS)/ganhoA;
   CorrmARMS = (sqrt(accmAflt/AMOSTRAS)/ganhomA)*1000; //multiplica por 1000 para mostrar em mA
   VoltsRMS = (sqrt(accVflt/AMOSTRAS)/ganhoV)*224900; //divide pelo valor do resistor para encontrar a tenso
- 
+
   //se Sdbg is true envia valores RMS pela serial tmb.
   if(Sdbg == true){
     Serial.print(CorrRMS);
@@ -324,7 +326,8 @@ void testaAlteracaoRMS(float newRMS, float volts){
     if(numVezesDiferente >= limiteDiferencas){
       numVezesDiferente=0;
       rmsAnterior = newRMS;
-      sendtoSocket(3, vetorV, 2, vetorA,testaDif(dif));
+      //sendtoSocket(3, vetorV, 2, vetorA,testaDif(dif));
+      enviarPOST(3, vetorV, 2, vetorA,testaDif(dif));
       Serial.print("Detectado um evento");
 
       if(rmsTestdbg == true){
@@ -351,8 +354,9 @@ void testaAlteracaomARMS(float newRMS, float volts){
     if(numVezesDiferente >= limiteDiferencas){
       numVezesDiferente=0;
       rmsAnterior = newRMS;
-      sendtoSocket(3, vetorV, 1, vetormA,testaDif(dif));  
-
+      //sendtoSocket(3, vetorV, 1, vetormA,testaDif(dif));  
+      enviarPOST(3, vetorV, 1, vetormA,testaDif(dif));  
+ 
       if(rmsTestdbg == true){
         Serial.println("RMS Alterado");
       }
@@ -369,57 +373,86 @@ char testaDif(float x){
   else if (x < 0) return 'd';
 }
 
-//esta versao envia 2 vetores (tensao e corrente)
-//funçao socekt tcp
-// os parametros sao: (numero do sensor, vetor de tensao, numero sensor corrente, vetor corrente, tipo evento) 
-void sendtoSocket(byte vSensor, unsigned int vToSend[AMOSTRAS], byte iSensor, unsigned int iToSend[AMOSTRAS], char evento){
-  if(client.connect(server,10002)){
-    Serial.println("-> Conectado.");
-    //retirei o envio do numero do sensor de tensao [para esta versao eh sempre o mesmo]
-    //sprintf(tmpBuf,"%d:",vSensor);
-    //client.print(tmpBuf); //envia nome do sensor
-    client.print(evento); //envia tipo do evento pelo socket
-    client.print(":"); //envia separador pelo socket
-    
-    //percore o vetor de tensao para enviar todo pelo socket
-    for(uint8_t i=0; i<AMOSTRAS; i++){
-      sprintf(tmpBuf,"%d,",vToSend[i]); //converte valor da posiçao para char*
-      client.print(tmpBuf); // envia pelo socket
-    }
-    sprintf(tmpBuf,":%d:",iSensor); ////converte numero do sensor para char* (concatena com separador :)
-    client.print(tmpBuf); //envia pelo socket
-    //percore o vetor de corrente para enviar todo pelo socket
-    for(uint8_t i=0; i<AMOSTRAS; i++){
-      sprintf(tmpBuf,"%d,",iToSend[i]); //converte valor da posiçao para char*
-      client.print(tmpBuf); // envia pelo socket
-    }
+
+//esta versao deve converter os dados para o formato POST (substitui o sendToSocket)
+// e enviar pela rede a um servidor REST ou equivalente
+void enviarPOST(byte vSensor, unsigned int *vToSend, byte iSensor, unsigned int *iToSend, char evento){
+  /*--------------------------INICIO MONTAR PARAMAMETROS -----------------------------------*/
+  char buffer[5];
+  String strVolts,strCorr,valores;
+
+  //parte da tenso (deve percorrer o vetor de tensao, convertern para string e concatenar com valores do POST
+  for(uint8_t i=0; i<AMOSTRAS; i++){
+    sprintf(buffer,"%d,",vToSend[i]); //converte valor da posiçao para char*
+    strVolts += buffer;
+    sprintf(buffer,"%d,",iToSend[i]); //converte valor da posiçao para char*
+    strCorr += buffer;
   }
-  else{
-    // mensagem de erro se no conectar ao servidor..
-    Serial.println("-> Falha de conexao.");
-    
-  }
-  client.stop(); //encerra a comunicaçao
+  valores = "t="+String(evento)+"&v="+strVolts+"&s="+String(iSensor)+"&c="+strCorr;
+ 
+  
+  /*--------------------------FIM MONTAR PARAMAMETROS -----------------------------------*/
+
+  /*--------------------------ENVIA A COISA TODA      -----------------------------------*/
+  if(!postPage(serverName,serverPort,pageName,(char*)valores.c_str())) Serial.print(F("falha no POST "));
+  else Serial.print(F("foi.... "));    
+
 }
 
-//FUNCAO PARA PISCAR MOSTRANDO QUE ESTA VIVO
-void piscaLed(){
-  estadoLed = !estadoLed;
-  digitalWrite(led, estadoLed);
-}
+//baseado em http://playground.arduino.cc/Code/WebClient
+byte postPage(char* domainBuffer,int thisPort,char* page,char* thisData){
+  int inChar;
+  char outBuf[64];
 
+  Serial.print(F("connecting..."));
 
-//função que 'quantifica' ou 'mede' a memoria livre
-extern int __bss_end;
-extern void *__brkval;
+  if(client.connect(domainBuffer,thisPort) == 1)
+  {
+    Serial.println(F("connected"));
 
-int memoriaLivre(){
-  int memLivre;
-  if((int)__brkval == 0)
-    memLivre = ((int)&memLivre) - ((int)&__bss_end);
+    // send the header
+    sprintf(outBuf,"POST %s HTTP/1.1",page);
+    client.println(outBuf);
+    sprintf(outBuf,"Host: %s",domainBuffer);
+    client.println(outBuf);
+    client.println(F("Connection: close\r\nContent-Type: application/x-www-form-urlencoded"));
+    sprintf(outBuf,"Content-Length: %u\r\n",strlen(thisData));
+    client.println(outBuf);
+
+    // send the body (variables)
+    client.print(thisData);
+  } 
   else
-    memLivre = ((int)&memLivre) - ((int)&__brkval);
-  return memLivre;
+  {
+    Serial.println(F("failed"));
+    return 0;
+  }
+
+  int connectLoop = 0;
+
+  while(client.connected())
+  {
+    while(client.available())
+    {
+      inChar = client.read();
+      Serial.write(inChar);
+      connectLoop = 0;
+    }
+
+    delay(1);
+    connectLoop++;
+    if(connectLoop > 10000)
+    {
+      Serial.println();
+      Serial.println(F("Timeout"));
+      client.stop();
+    }
+  }
+
+  Serial.println();
+  Serial.println(F("disconnecting."));
+  client.stop();
+  return 1;
 }
 
 
@@ -447,8 +480,8 @@ void initDisplay(){
 void atualizaDisplay(float iRMS,unsigned int vRMS, float fp){
   lcd.setCursor(0,1);
   lcd.print("                ");
-  
-  
+
+
   //mostra corrente
   lcd.setCursor(6,1);
   lcd.print("/I=");
@@ -496,9 +529,7 @@ void atualizaDisplaymA(int iRMS,unsigned int vRMS, float fp){
   //lcd.setCursor(9,1);
   //lcd.print("FP:");
   //lcd.print(fp);
-
 }
-
 
 void limparDisplay(){
   //limpa o display
@@ -506,44 +537,73 @@ void limparDisplay(){
   lcd.print("                ");
   lcd.setCursor(0,1);
   lcd.print("                ");
-  
+
   lcd.setCursor(0,0);
   lcd.print(" Prototipo MCCT ");
 }
 
 
-void ajustaBrilho(){
-  //ajusta o brilho
-  //analogWrite(10,150);
-  //o que fazer aqui?
+
+//**********************************
+//************* funcoes para teste de memoria e de alive
+//**********************************
+void timerIsr(){
+  estadoLed = !estadoLed;
+  digitalWrite(led, estadoLed);
+}
+
+void teste(){
+  Serial.print("Estou vivo ainda, com: "); 
+  Serial.print(memoriaLivre());
+  Serial.println(" de memoria livre;"); 
+}
+//função que 'quantifica' ou 'mede' a memoria livre
+extern int __bss_end;
+extern void *__brkval;
+
+int memoriaLivre(){
+  int memLivre;
+  if((int)__brkval == 0)
+    memLivre = ((int)&memLivre) - ((int)&__bss_end);
+  else
+    memLivre = ((int)&memLivre) - ((int)&__brkval);
+  return memLivre;
 }
 
 
-/* O QUE ESTA DAQUI PARA BAIXO NAO ESTA MAIS SENDO USADO
-########################################################################################/
-//esta versao manda 1 vetor corrente + tensao RMS
-void sendToSocket(byte sensor, int volts, unsigned int vetorParaEnviar[AMOSTRAS]){  
+/* ESTA FUNÇAO DEVERA SER SUBSTITUDA PELA ENVIOPORPOST*/
+//esta versao envia 2 vetores (tensao e corrente)
+//funçao socekt tcp
+// os parametros sao: (numero do sensor, vetor de tensao, numero sensor corrente, vetor corrente, tipo evento) 
+void sendtoSocket(byte vSensor, unsigned int vToSend[AMOSTRAS], byte iSensor, unsigned int iToSend[AMOSTRAS], char evento){
   if(client.connect(server,10002)){
     Serial.println("-> Conectado.");
-    sprintf(tmpBuf,"%d:",sensor);
-    client.print(tmpBuf); //envia nome do sensor
-    sprintf(tmpBuf,"%d:",volts); //envia tensao lida (*10) para ir como inteiro
-    client.print(tmpBuf); //envia valor de tensao
-    //pega o vetor, converte para array de char para envio pelo socket
+    //retirei o envio do numero do sensor de tensao [para esta versao eh sempre o mesmo]
+    //sprintf(tmpBuf,"%d:",vSensor);
+    //client.print(tmpBuf); //envia nome do sensor
+    client.print(evento); //envia tipo do evento pelo socket
+    client.print(":"); //envia separador pelo socket
+
+      //percore o vetor de tensao para enviar todo pelo socket
     for(uint8_t i=0; i<AMOSTRAS; i++){
-      sprintf(tmpBuf,"%d,",vetorParaEnviar[i]); //enviando somente o valor
-      client.print(tmpBuf);
+      sprintf(tmpBuf,"%d,",vToSend[i]); //converte valor da posiçao para char*
+      client.print(tmpBuf); // envia pelo socket
+    }
+    sprintf(tmpBuf,":%d:",iSensor); ////converte numero do sensor para char* (concatena com separador :)
+    client.print(tmpBuf); //envia pelo socket
+    //percore o vetor de corrente para enviar todo pelo socket
+    for(uint8_t i=0; i<AMOSTRAS; i++){
+      sprintf(tmpBuf,"%d,",iToSend[i]); //converte valor da posiçao para char*
+      client.print(tmpBuf); // envia pelo socket
     }
   }
   else{
+    // mensagem de erro se no conectar ao servidor..
     Serial.println("-> Falha de conexao.");
+
   }
-  client.stop();
+  client.stop(); //encerra a comunicaçao
 }
-
-*/
-
-
 
 
 
