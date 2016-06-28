@@ -131,6 +131,7 @@ void setup(){
   Serial.print(F("Starting ethernet..."));
   Ethernet.begin(mac, ip);
 
+  //tempo para interface levantar
   delay(100);
 }
 
@@ -191,88 +192,8 @@ void loop(){
 
   testaSobreTensao();
 
-  delay(1000);
+  delay(250);
 }
-
-//testar se houve picos de tensao - implementado em 23/9
-void testaSobreTensao(){
-  //percorrer o vetor buscando valores acima de PIC_SUP_T e abaixo PIC_INF_T
-  for(uint16_t i=0; i<AMOSTRAS; i++){
-    if (vetorV[i] >= TENSAO_LIMIT_S || vetorV[i] <= TENSAO_LIMIT_I){
-      //sendtoSocket(3, vetorV, 2, vetorA,'a');
-      enviarPOST(3, vetorV, 2, vetorA,'a');
-      Serial.println(F("Detectado sobre tensao"));
-      break;
-    }
-  }
-}
-
-
-
-// o limite para teste de mA de 0.10A
-// esta funçao serve para detectar se houve alteraçao do valor RMS
-// o teste  aplicado a cada 3 leituras (limiteDiferencas=3;)
-// se 3 leituras de corrente tiverem uma diferença maior que 100mA entao temos um evento
-void testaAlteracaoRMS(float newRMS, float volts){
-  //Quando teste der 'positivo' n vezes zera contador e envia esta amostra
-  float dif = newRMS - rmsAnterior;
-  if(abs(dif) > 0.10){
-    numVezesDiferente++;
-    if(rmsTestdbg == true){
-      Serial.println(numVezesDiferente);
-    }
-    //se testou n vezes e deu diferença entao tem que alterar.
-    if(numVezesDiferente >= limiteDiferencas){
-      numVezesDiferente=0;
-      rmsAnterior = newRMS;
-      //sendtoSocket(3, vetorV, 2, vetorA,testaDif(dif));
-      enviarPOST(3, vetorV, 2, vetorA,testaDif(dif));
-      Serial.print("Detectado um evento");
-
-      if(rmsTestdbg == true){
-        Serial.println("RMS Alterado");
-      }
-    }
-  }
-  else{
-    numVezesDiferente=0;
-  }
-}
-
-
-// idem para funcao anterior mas limite para teste de mA eh de 50mA 
-void testaAlteracaomARMS(float newRMS, float volts){
-  //Quando teste der 'positivo' n vezes zera contador e envia esta amostra
-  float dif = newRMS - rmsAnterior;
-  if(abs(dif) > 50){
-    numVezesDiferente++;
-    if(rmsTestdbg == true){
-      Serial.println(numVezesDiferente);
-    }
-    //se testou n vezes e deu diferença entao tem que alterar.
-    if(numVezesDiferente >= limiteDiferencas){
-      numVezesDiferente=0;
-      rmsAnterior = newRMS;
-      //sendtoSocket(3, vetorV, 1, vetormA,testaDif(dif));  
-      enviarPOST(3, vetorV, 1, vetormA,testaDif(dif));  
- 
-      if(rmsTestdbg == true){
-        Serial.println("RMS Alterado");
-      }
-    }
-  }
-  else{
-    numVezesDiferente=0;
-  }
-}
-
-//esta funçao apenas retorna se o evento foi ligar (l) ou desligar(d)
-char testaDif(float x){
-  if (x > 0) return 'l';
-  else if (x < 0) return 'd';
-}
-
-
 
 
 //**********************************
@@ -290,40 +211,6 @@ void teste(){
 }
 
 
-
-/* ESTA FUNÇAO DEVERA SER SUBSTITUDA PELA ENVIOPORPOST*/
-//esta versao envia 2 vetores (tensao e corrente)
-//funçao socekt tcp
-// os parametros sao: (numero do sensor, vetor de tensao, numero sensor corrente, vetor corrente, tipo evento) 
-void sendtoSocket(byte vSensor, unsigned int vToSend[AMOSTRAS], byte iSensor, unsigned int iToSend[AMOSTRAS], char evento){
-  if(client.connect(server,10002)){
-    Serial.println("-> Conectado.");
-    //retirei o envio do numero do sensor de tensao [para esta versao eh sempre o mesmo]
-    //sprintf(tmpBuf,"%d:",vSensor);
-    //client.print(tmpBuf); //envia nome do sensor
-    client.print(evento); //envia tipo do evento pelo socket
-    client.print(":"); //envia separador pelo socket
-
-      //percore o vetor de tensao para enviar todo pelo socket
-    for(uint8_t i=0; i<AMOSTRAS; i++){
-      sprintf(tmpBuf,"%d,",vToSend[i]); //converte valor da posiçao para char*
-      client.print(tmpBuf); // envia pelo socket
-    }
-    sprintf(tmpBuf,":%d:",iSensor); ////converte numero do sensor para char* (concatena com separador :)
-    client.print(tmpBuf); //envia pelo socket
-    //percore o vetor de corrente para enviar todo pelo socket
-    for(uint8_t i=0; i<AMOSTRAS; i++){
-      sprintf(tmpBuf,"%d,",iToSend[i]); //converte valor da posiçao para char*
-      client.print(tmpBuf); // envia pelo socket
-    }
-  }
-  else{
-    // mensagem de erro se no conectar ao servidor..
-    Serial.println("-> Falha de conexao.");
-
-  }
-  client.stop(); //encerra a comunicaçao
-}
 
 
 
